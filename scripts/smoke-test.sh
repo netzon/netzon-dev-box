@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'echo "FAIL line $LINENO: $BASH_COMMAND" >&2' ERR
 for tool in claude git python3 uv pyrefly flutter dart sdkmanager java javac rustc cargo fnm node npm bun scc jq rg zip unzip wget dotnet playwright xvfb-run chromium-gpu-check; do
   command -v "$tool" >/dev/null || { echo "Missing: $tool" >&2; exit 1; }
 done

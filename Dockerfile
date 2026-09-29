@@ -129,7 +129,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf xfonts-cyrillic xfonts-scalable \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
-    && install -d -o runner -g runner /opt/playwright /opt/ms-playwright
+    && install -d -o runner -g runner /opt/playwright /opt/ms-playwright \
+    && install -d -m 1777 /tmp/.X11-unix \
+    && install -d -m 755 /etc/claude-code
+# /etc/claude-code must exist first: COPY --chmod gives the directories it creates the file's mode
+# (moby/buildkit#5943), and a 0644 directory hides CLAUDE.md from the runner user.
 COPY --chmod=644 image/etc/claude-code/CLAUDE.md /etc/claude-code/CLAUDE.md
 COPY --chmod=755 image/usr/local/bin/chromium-gpu-check /usr/local/bin/chromium-gpu-check
 
