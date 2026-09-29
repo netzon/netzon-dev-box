@@ -92,6 +92,8 @@ FROM os AS toolchains
 # Corepack from consulting the registry outside a project) and TypeScript installed globally. pnpm 12
 # fetches its native binary into COREPACK_HOME on first run, so it is run once here. uv's own
 # python shims in ~/.local/bin are removed so every `python*` name means the /opt/venv interpreter.
+# Build-time caches are cleaned afterwards; `uv cache clean` deletes the directory itself, so the
+# /cache mount points are recreated (the smoke test checks they exist and are writable).
 RUN set -eux; \
     curl -fsSL https://astral.sh/uv/install.sh -o /tmp/install-uv.sh; \
     UV_NO_MODIFY_PATH=1 sh /tmp/install-uv.sh; \
@@ -101,7 +103,7 @@ RUN set -eux; \
       pillow numpy pandas scipy matplotlib requests beautifulsoup4 lxml sqlalchemy; \
     uv tool install pyrefly; \
     uv tool install ruff; \
-    uv cache clean; \
+    uv cache clean; mkdir -p "$UV_CACHE_DIR"; \
     rm -f "$HOME"/.local/bin/python "$HOME"/.local/bin/python3 "$HOME"/.local/bin/python3.*; \
     curl -fsSL https://sh.rustup.rs -o /tmp/install-rust.sh; \
     sh /tmp/install-rust.sh -y --no-modify-path --profile minimal; \
@@ -121,7 +123,7 @@ RUN set -eux; \
     corepack enable --install-directory "$HOME/.node-bin"; \
     corepack install -g pnpm@latest yarn@latest; \
     pnpm --version; \
-    npm cache clean --force; \
+    npm cache clean --force; mkdir -p "$npm_config_cache"; \
     rm -f /tmp/install-uv.sh /tmp/install-rust.sh /tmp/install-bun.sh /tmp/install-fnm.sh; \
     test "$(command -v python3)" = /opt/venv/bin/python3; \
     python3 --version; python3 -c 'import PIL, numpy, pandas'; pyrefly --version; ruff --version; \
@@ -151,7 +153,7 @@ RUN set -eux; \
     bins="$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \))"; \
     test "$(wc -l <<< "$bins")" -eq 2; \
     if ldd $bins | grep 'not found'; then exit 1; fi; \
-    npm cache clean --force; \
+    npm cache clean --force; mkdir -p "$npm_config_cache"; \
     playwright --version
 
 USER root
