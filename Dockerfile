@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git unzip zip wget jq ripgrep xz-utils tar tzdata \
     build-essential cmake pkg-config libssl-dev libsqlite3-dev \
-    gh less file tree rsync openssh-client bsdextrautils time procps htop lsof strace nano tmux fzf \
+    gh less file tree rsync openssh-client bsdextrautils time procps htop lsof strace nano tmux fzf libcap2-bin \
     bind9-dnsutils iputils-ping netcat-openbsd socat bubblewrap \
     sqlite3 graphviz imagemagick shellcheck fd-find \
     libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 \
@@ -89,7 +89,8 @@ FROM os AS toolchains
 # data-analysis and image libraries; it sits late on PATH so an activated project venv wins. Pyrefly
 # and Ruff are uv tools. Rust is the minimal stable profile. Node is the current LTS through fnm, with
 # Corepack's pnpm and yarn downloaded now (so they start offline; COREPACK_DEFAULT_TO_LATEST=0 keeps
-# Corepack from consulting the registry outside a project) and TypeScript installed globally. uv's own
+# Corepack from consulting the registry outside a project) and TypeScript installed globally. pnpm 12
+# fetches its native binary into COREPACK_HOME on first run, so it is run once here. uv's own
 # python shims in ~/.local/bin are removed so every `python*` name means the /opt/venv interpreter.
 RUN set -eux; \
     curl -fsSL https://astral.sh/uv/install.sh -o /tmp/install-uv.sh; \
@@ -119,6 +120,7 @@ RUN set -eux; \
     for bin in node npm npx corepack tsc; do ln -s "$node_bin_dir/$bin" "$HOME/.node-bin/$bin"; done; \
     corepack enable --install-directory "$HOME/.node-bin"; \
     corepack install -g pnpm@latest yarn@latest; \
+    pnpm --version; \
     npm cache clean --force; \
     rm -f /tmp/install-uv.sh /tmp/install-rust.sh /tmp/install-bun.sh /tmp/install-fnm.sh; \
     test "$(command -v python3)" = /opt/venv/bin/python3; \
