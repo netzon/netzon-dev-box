@@ -1,7 +1,11 @@
 # Netzon Dev Box: browser testing notes
 
-- Playwright 1.63.0 (`playwright` CLI) is installed globally, with Chromium and Chrome Headless Shell already in `$PLAYWRIGHT_BROWSERS_PATH` (`/opt/ms-playwright`, writable). All Chromium system libraries, fonts and Xvfb are installed. There is no sudo, and none is needed: never run `playwright install --with-deps` or `playwright install-deps`.
-- A project pinned to a different Playwright version needs only `npx playwright install chromium` (browser download, no root).
+- Playwright 1.63.0 (`playwright` and `@playwright/test` in `/opt/playwright`), Chromium and Chrome Headless Shell (in `$PLAYWRIGHT_BROWSERS_PATH` = `/opt/ms-playwright`, also reachable as `~/.cache/ms-playwright`), and all their system libraries, fonts and Xvfb are part of the image. They survive session resumes and container restarts. The scratchpad and `/tmp` do not, so never rebuild a browser setup there. Scratch scripts need no `npm i playwright` or `npx playwright install`, and nothing ever needs `apt-get download`, `LD_LIBRARY_PATH`, `FONTCONFIG_FILE`, `--with-deps` or `install-deps` (there is no sudo, and none is needed).
+- Ad-hoc scripts work from any directory with no install:
+  - ESM: `import { chromium } from '/opt/playwright/node_modules/playwright/index.mjs';` (a bare `'playwright'` import only resolves inside a project that depends on it)
+  - CommonJS: `const { chromium } = require('playwright');` (`NODE_PATH` points at `/opt/playwright/node_modules`; `@playwright/test` works too)
+  - CLI: `playwright screenshot …`, `npx playwright …`
+- A project with its own Playwright dependency uses that copy. If its version differs from 1.63.0, run `npx playwright install chromium` in the project (browser download only, no root).
 - There is no GPU. Chromium renders in software with its bundled SwiftShader. WebGL/WebGL2 works with default launch options. WebGPU needs these launch args, from a secure context (`http://localhost`/`127.0.0.1`, `https` or `file://`). `about:blank`, `data:` URLs and `page.setContent()` are not secure, so `navigator.gpu` is undefined there:
   ```js
   chromium.launch({ args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,CDPScreenshotNewSurface', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] })

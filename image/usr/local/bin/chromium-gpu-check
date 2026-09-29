@@ -6,7 +6,6 @@
 'use strict';
 
 const http = require('http');
-const path = require('path');
 
 // Launch args that make WebGPU work without a GPU. WebGL/WebGL2 already works with Playwright's
 // defaults (it passes --enable-unsafe-swiftshader). CDPScreenshotNewSurface is repeated because
@@ -17,16 +16,6 @@ const GPU_ARGS = [
   '--use-vulkan=swiftshader',
   '--use-angle=swiftshader',
 ];
-
-function loadPlaywright() {
-  // Prefer the image's global install over whatever the current directory resolves to.
-  const globalRoot = path.resolve(process.execPath, '..', '..', 'lib', 'node_modules');
-  try {
-    return require(path.join(globalRoot, 'playwright'));
-  } catch {
-    return require('playwright');
-  }
-}
 
 // Runs in the page: draws a green triangle with WebGL2 and with WebGPU, then reads pixels back.
 async function probe() {
@@ -144,7 +133,8 @@ async function main() {
     console.error('--headed needs an X display: run `xvfb-run -a chromium-gpu-check --headed`');
     return 2;
   }
-  const { chromium } = loadPlaywright();
+  // The image's own copy, not whatever the current project resolves to.
+  const { chromium } = require('/opt/playwright/node_modules/playwright');
   const modes = headed
     ? [{ name: 'chromium headed', options: { headless: false } }]
     : [

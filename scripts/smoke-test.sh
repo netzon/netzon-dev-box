@@ -39,6 +39,14 @@ printf '{"sdk":{"version":"10.0.401","rollForward":"disable"}}\n' > "$tmp/global
 printf '{"sdk":{"version":"11.0.100-rc.1.26425.128","allowPrerelease":true,"rollForward":"disable"}}\n' > "$tmp/global.json"
 ( cd "$tmp" && [[ "$(dotnet --version)" == 11.0.100-rc.1.26425.128 ]] )
 [[ "$(playwright --version)" == 'Version 1.63.0' ]]
-chromium-gpu-check </dev/null
-xvfb-run -a chromium-gpu-check --headed </dev/null
+[[ -L "$HOME/.cache/ms-playwright" ]]
+# Ad-hoc scripts outside any project reach the preinstalled Playwright without an npm install.
+( cd "$tmp" && [[ "$(npx --no-install playwright --version)" == 'Version 1.63.0' ]] )
+chrome="$(cd "$tmp" && node -p "require('playwright').chromium.executablePath()")"
+[[ -x "$chrome" ]]
+( cd "$tmp" && node -e "require('@playwright/test')" )
+printf "import { chromium } from '/opt/playwright/node_modules/playwright/index.mjs';\nconsole.log(chromium.executablePath());\n" > "$tmp/probe.mjs"
+[[ "$(node "$tmp/probe.mjs")" == "$chrome" ]]
+chromium-gpu-check
+xvfb-run -a chromium-gpu-check --headed
 echo 'PASS: toolchain is available to the non-root user'

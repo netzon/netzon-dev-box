@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 # Source Dockerfile is MIT licensed. Downloaded tools retain their own licenses.
-FROM --platform=linux/amd64 ubuntu:26.04
+# amd64-only (x64 .NET, scc, JAVA_HOME): build with `--platform linux/amd64`, as CI does.
+FROM ubuntu:26.04
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    || { echo 'This image is amd64-only: build with --platform linux/amd64' >&2; exit 1; }
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CLAUDE_VERSION=2.1.284
@@ -124,21 +127,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
     xvfb xauth libfontconfig1 libfreetype6 fonts-liberation fonts-noto-color-emoji fonts-unifont \
     fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf xfonts-cyrillic xfonts-scalable \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
-    && install -d -o runner -g runner /opt/ms-playwright
+    && install -d -o runner -g runner /opt/playwright /opt/ms-playwright
 COPY --chmod=644 image/etc/claude-code/CLAUDE.md /etc/claude-code/CLAUDE.md
 COPY --chmod=755 image/usr/local/bin/chromium-gpu-check /usr/local/bin/chromium-gpu-check
 
 # Declared here rather than with the other ARGs so a bump only rebuilds the layers below.
 ARG PLAYWRIGHT_VERSION=1.63.0
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    NODE_PATH=/opt/playwright/node_modules
 
-# Playwright CLI plus Chromium and Chrome Headless Shell. The browser directory stays writable so
-# projects pinned to another Playwright version can `npx playwright install chromium` without root.
+# playwright and @playwright/test live in /opt/playwright so scripts anywhere can load them without an
+# npm install: require() through NODE_PATH, ESM through the absolute path. `playwright` is on PATH, and
+# linked into npm's global bin so `npx playwright` from any directory uses this version offline.
+# Chromium and Chrome Headless Shell go in the runner-writable browser directory, so projects pinned to
+# another Playwright version can `npx playwright install chromium` without root. ~/.cache/ms-playwright
+# points there too, for environments that drop PLAYWRIGHT_BROWSERS_PATH.
 USER runner
 RUN set -eux; \
-    npm install -g "playwright@${PLAYWRIGHT_VERSION}"; \
-    ln -s "$(npm prefix -g)/bin/playwright" "$HOME/.node-bin/playwright"; \
+    cd /opt/playwright; \
+    printf '{"name":"dev-box-playwright","private":true}\n' > package.json; \
+    npm install --save-exact "playwright@${PLAYWRIGHT_VERSION}" "@playwright/test@${PLAYWRIGHT_VERSION}"; \
+    ln -s /opt/playwright/node_modules/.bin/playwright "$HOME/.node-bin/playwright"; \
+    ln -s /opt/playwright/node_modules/.bin/playwright "$(npm prefix -g)/bin/playwright"; \
+    mkdir -p "$HOME/.cache"; \
+    ln -s "$PLAYWRIGHT_BROWSERS_PATH" "$HOME/.cache/ms-playwright"; \
     playwright install chromium; \
     bins="$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \))"; \
     test "$(wc -l <<< "$bins")" -eq 2; \

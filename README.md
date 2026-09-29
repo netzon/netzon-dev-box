@@ -4,13 +4,19 @@ Public, Linux/amd64 development container for Claude Code sessions and interacti
 
 ## Included
 
-Claude Code (default 2.1.284), Python 3.13 via uv, Pyrefly, Flutter stable, Android SDK command-line tools / API 36 / build-tools 36.0.0, Java 21, Rust/Cargo, fnm with Node LTS, Bun, Playwright 1.63.0 with Chromium and Chrome Headless Shell (plus their system libraries, fonts, and Xvfb), scc, jq, ripgrep, zip, unzip, wget, and .NET SDK 10.0.401 plus 11.0.100-rc.1.26425.128. Builds run as non-root `runner` (UID/GID 10001); `/workspace` is writable. The image entrypoint is `claude`.
+Claude Code (default 2.1.284), Python 3.13 via uv, Pyrefly, Flutter stable, Android SDK command-line tools / API 36 / build-tools 36.0.0, Java 21, Rust/Cargo, fnm with Node LTS, Bun, Playwright 1.63.0 and `@playwright/test` with Chromium and Chrome Headless Shell (plus their system libraries, fonts, and Xvfb), scc, jq, ripgrep, zip, unzip, wget, and .NET SDK 10.0.401 plus 11.0.100-rc.1.26425.128. Builds run as non-root `runner` (UID/GID 10001); `/workspace` is writable. The image entrypoint is `claude`.
 
 The Android installation does **not** include Android Studio, an emulator, an NDK, or a connected device. No environment secret or Docker socket is mounted by this image; those are deployment decisions outside this repository. A large image and substantial CI disk usage are expected; test runner capacity before relying on hosted CI.
 
 ## Browser testing without a GPU
 
-Playwright's browsers live in `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, which `runner` can write to. A project pinned to another Playwright version only needs `npx playwright install chromium`. The system dependencies are already installed, so `--with-deps` / `install-deps` (which need root) are never required.
+Everything Playwright needs is baked into the image, so it is still there when a session resumes in a fresh container (unlike the scratchpad or `/tmp`):
+
+- `playwright` and `@playwright/test` are installed in `/opt/playwright`. Scripts in any directory can load them without an install: `require('playwright')` works through `NODE_PATH`, and ESM uses `import { chromium } from '/opt/playwright/node_modules/playwright/index.mjs'`. A bare ESM `'playwright'` import only resolves inside a project that depends on it. `playwright` is on `PATH`, and `npx playwright` resolves to it from any directory without network access.
+- The browsers live in `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, which `runner` can write to. `~/.cache/ms-playwright` links there for environments that drop the variable. A project pinned to another Playwright version only needs `npx playwright install chromium`.
+- The system dependencies are already installed, so `--with-deps` / `install-deps` (which need root) are never required.
+
+A project-level `node_modules` always takes precedence. A root-level `/node_modules` would make bare ESM imports work everywhere, but it is deliberately not used: npm treats the nearest ancestor containing `node_modules` as the project root, so `npm install` in any folder without a `package.json` would try to install into `/`.
 
 The image expects no GPU. Chromium renders in software with its bundled SwiftShader:
 
@@ -32,15 +38,17 @@ Review Google's Android SDK license terms first. Building intentionally requires
 
 ```bash
 docker build --platform linux/amd64 --build-arg ACCEPT_ANDROID_LICENSES=1 -t dev-box:local .
-docker run --rm --entrypoint bash dev-box:local -s < scripts/smoke-test.sh
+docker run --rm --entrypoint bash dev-box:local -c "$(cat scripts/smoke-test.sh)"
 docker run --rm -it --entrypoint bash dev-box:local
 ```
+
+`--platform linux/amd64` is required: the image installs x64-only tools, and the Dockerfile stops at its first step on any other architecture.
 
 Do not put secrets in Docker build arguments, the repository, or the image. This image is a **toolbox**, not an orchestrator: supply credentials or one-time work orders only through your deployment system, and do not mount the Docker daemon socket into untrusted sessions.
 
 ## Docker Hub publication
 
-The workflow builds and smoke-tests first. Pull requests only test; pushes to `main` publish `latest` and a `sha-...` tag; `v*` tags publish the version tag and a `sha-...` tag. Manual dispatch publishes a `sha-...` tag. It uses the organization secrets `DOCKER_HUB_USERNAME` and `DOCKER_HUB_ACCESS_TOKEN`. Ensure the repository has access to both and that the token can push to the target Docker Hub namespace. By default the namespace is the Docker Hub username; if publishing to an organization namespace, set the GitHub Actions **repository variable** `DOCKER_HUB_NAMESPACE` to that namespace. Create the `dev-box` repository in Docker Hub if your account does not automatically create repositories on first push.
+The workflow builds and smoke-tests first. Pull requests only test; pushes to `main` publish `latest` and a `sha-...` tag; `v*` tags publish the version tag and a `sha-...` tag. Manual dispatch publishes a `sha-...` tag, plus `latest` when dispatched on `main`. It uses the organization secrets `DOCKER_HUB_USERNAME` and `DOCKER_HUB_ACCESS_TOKEN`. Ensure the repository has access to both and that the token can push to the target Docker Hub namespace. By default the namespace is the Docker Hub username; if publishing to an organization namespace, set the GitHub Actions **repository variable** `DOCKER_HUB_NAMESPACE` to that namespace. Create the `dev-box` repository in Docker Hub if your account does not automatically create repositories on first push.
 
 The workflow passes `ACCEPT_ANDROID_LICENSES=1` on every CI build. A maintainer must review the relevant Android SDK terms **before enabling CI**. No secret value is embedded in the repository. GitHub-hosted runners may require more free disk space than the default allocation; if builds fail for lack of disk, use a larger runner or split the image rather than deleting unrelated runner data.
 
