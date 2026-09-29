@@ -116,6 +116,35 @@ RUN set -eux; \
     install -m 755 "$binary" /usr/local/bin/scc; \
     rm -rf /tmp/scc.tar.gz /tmp/scc-checksums /tmp/scc-extract
 
+# Chromium runtime libraries and fonts from Playwright 1.63's ubuntu26.04 dependency list, plus Xvfb
+# for headed runs. There is no GPU: WebGL/WebGPU render in software via Chromium's bundled SwiftShader.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 \
+    libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 \
+    libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+    xvfb xauth libfontconfig1 libfreetype6 fonts-liberation fonts-noto-color-emoji fonts-unifont \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf xfonts-cyrillic xfonts-scalable \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -o runner -g runner /opt/ms-playwright
+COPY --chmod=644 image/etc/claude-code/CLAUDE.md /etc/claude-code/CLAUDE.md
+COPY --chmod=755 image/usr/local/bin/chromium-gpu-check /usr/local/bin/chromium-gpu-check
+
+# Declared here rather than with the other ARGs so a bump only rebuilds the layers below.
+ARG PLAYWRIGHT_VERSION=1.63.0
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# Playwright CLI plus Chromium and Chrome Headless Shell. The browser directory stays writable so
+# projects pinned to another Playwright version can `npx playwright install chromium` without root.
 USER runner
+RUN set -eux; \
+    npm install -g "playwright@${PLAYWRIGHT_VERSION}"; \
+    ln -s "$(npm prefix -g)/bin/playwright" "$HOME/.node-bin/playwright"; \
+    playwright install chromium; \
+    bins="$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name chrome-headless-shell \))"; \
+    test "$(wc -l <<< "$bins")" -eq 2; \
+    if ldd $bins | grep 'not found'; then exit 1; fi; \
+    npm cache clean --force; \
+    playwright --version
+
 WORKDIR /workspace
 ENTRYPOINT ["claude"]

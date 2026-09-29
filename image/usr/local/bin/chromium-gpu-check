@@ -1,0 +1,196 @@
+#!/usr/bin/env node
+// Verifies that Playwright's Chromium can render WebGL2 and WebGPU on this GPU-less machine
+// (software rendering via Chromium's bundled SwiftShader) and that screenshots capture both.
+// Usage: chromium-gpu-check            headless shell + new headless (channel: 'chromium')
+//        xvfb-run -a chromium-gpu-check --headed
+'use strict';
+
+const http = require('http');
+const path = require('path');
+
+// Launch args that make WebGPU work without a GPU. WebGL/WebGL2 already works with Playwright's
+// defaults (it passes --enable-unsafe-swiftshader). CDPScreenshotNewSurface is repeated because
+// Playwright enables it itself and Chromium only honours the last --enable-features switch.
+const GPU_ARGS = [
+  '--enable-unsafe-webgpu',
+  '--enable-features=Vulkan,CDPScreenshotNewSurface',
+  '--use-vulkan=swiftshader',
+  '--use-angle=swiftshader',
+];
+
+function loadPlaywright() {
+  // Prefer the image's global install over whatever the current directory resolves to.
+  const globalRoot = path.resolve(process.execPath, '..', '..', 'lib', 'node_modules');
+  try {
+    return require(path.join(globalRoot, 'playwright'));
+  } catch {
+    return require('playwright');
+  }
+}
+
+// Runs in the page: draws a green triangle with WebGL2 and with WebGPU, then reads pixels back.
+async function probe() {
+  const size = 64;
+  const isGreen = (p) => p[0] < 16 && p[1] > 239 && p[2] < 16;
+  const readBack = (canvas) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    g.drawImage(canvas, 0, 0);
+    return g.getImageData(size / 2, size / 2, 1, 1).data;
+  };
+  const addCanvas = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    document.body.append(canvas);
+    return canvas;
+  };
+  const out = {};
+  try {
+    const gl = addCanvas().getContext('webgl2', { preserveDrawingBuffer: true });
+    if (!gl) throw new Error('getContext("webgl2") returned null');
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    out.webglRenderer = gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
+    const shader = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, shader(gl.VERTEX_SHADER, '#version 300 es\nvoid main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);gl_Position=vec4(p*2.0-1.0,0,1);}'));
+    gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float;out vec4 c;void main(){c=vec4(0,1,0,1);}'));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const px = readBack(gl.canvas);
+    out.webgl2 = isGreen(px) ? 'ok' : `wrong pixel ${Array.from(px)}`;
+  } catch (e) {
+    out.webgl2 = `fail: ${e.message}`;
+  }
+  try {
+    if (!navigator.gpu) throw new Error('navigator.gpu is undefined (needs --enable-unsafe-webgpu and a secure context)');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter() returned null');
+    const info = adapter.info || {};
+    out.webgpuAdapter = [info.vendor, info.architecture, info.description].filter(Boolean).join(' / ');
+    const device = await adapter.requestDevice();
+    const canvas = addCanvas();
+    const ctx = canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    ctx.configure({ device, format, alphaMode: 'opaque' });
+    const module = device.createShaderModule({ code: `
+      @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+        let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+        return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+      }
+      @fragment fn fs() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }` });
+    const pipeline = await device.createRenderPipelineAsync({
+      layout: 'auto',
+      vertex: { module, entryPoint: 'vs' },
+      fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+    });
+    device.pushErrorScope('validation');
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: ctx.getCurrentTexture().createView(), clearValue: { r: 1, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+    });
+    pass.setPipeline(pipeline);
+    pass.draw(3);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    const px = readBack(canvas); // same task as submit, before the frame is presented
+    const err = await device.popErrorScope();
+    if (err) throw new Error(err.message);
+    out.webgpu = isGreen(px) ? 'ok' : `wrong pixel ${Array.from(px)}`;
+  } catch (e) {
+    out.webgpu = `fail: ${e.message}`;
+  }
+  return out;
+}
+
+// Decodes a Playwright screenshot in the page and checks each canvas was composited green.
+async function checkScreenshot(page) {
+  const png = await page.screenshot();
+  const results = await page.evaluate(async (b64) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    return [...document.querySelectorAll('body > canvas')].map((el) => {
+      const r = el.getBoundingClientRect();
+      const p = g.getImageData(Math.floor(r.x + r.width / 2), Math.floor(r.y + r.height / 2), 1, 1).data;
+      return p[0] < 16 && p[1] > 239 && p[2] < 16 ? 'ok' : `wrong pixel ${Array.from(p)}`;
+    });
+  }, png.toString('base64'));
+  if (results.length !== 2) return `expected 2 canvases, found ${results.length}`;
+  return results.every((r) => r === 'ok') ? 'ok' : `webgl2 ${results[0]}, webgpu ${results[1]}`;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.includes('-h') || argv.includes('--help')) {
+    console.log('Usage: chromium-gpu-check [--headed]   (run --headed under `xvfb-run -a`)');
+    return 0;
+  }
+  const headed = argv.includes('--headed');
+  if (headed && !process.env.DISPLAY) {
+    console.error('--headed needs an X display: run `xvfb-run -a chromium-gpu-check --headed`');
+    return 2;
+  }
+  const { chromium } = loadPlaywright();
+  const modes = headed
+    ? [{ name: 'chromium headed', options: { headless: false } }]
+    : [
+        { name: 'chromium-headless-shell', options: {} },
+        { name: "chromium new headless (channel: 'chromium')", options: { channel: 'chromium' } },
+      ];
+
+  // WebGPU is only exposed in secure contexts, so serve the page from localhost.
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><body style="margin:0;background:#fff"></body>');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/`;
+
+  let failed = false;
+  for (const mode of modes) {
+    let browser;
+    let result;
+    try {
+      browser = await chromium.launch({ ...mode.options, args: GPU_ARGS, timeout: 60000 });
+      const page = await browser.newPage();
+      page.setDefaultTimeout(60000);
+      await page.goto(url);
+      result = await page.evaluate(probe);
+      result.screenshot = await checkScreenshot(page);
+      result.version = browser.version();
+    } catch (e) {
+      result = { error: e.message.split('\n')[0] };
+    } finally {
+      await browser?.close().catch(() => {});
+    }
+    const ok = result.webgl2 === 'ok' && result.webgpu === 'ok' && result.screenshot === 'ok';
+    failed ||= !ok;
+    console.log(`${ok ? 'PASS' : 'FAIL'} ${mode.name}${result.version ? ` ${result.version}` : ''}`);
+    if (result.error) {
+      console.log(`  error:      ${result.error}`);
+    } else {
+      console.log(`  WebGL2:     ${result.webgl2}${result.webglRenderer ? ` (${result.webglRenderer})` : ''}`);
+      console.log(`  WebGPU:     ${result.webgpu}${result.webgpuAdapter ? ` (${result.webgpuAdapter})` : ''}`);
+      console.log(`  screenshot: ${result.screenshot}`);
+    }
+  }
+  server.close();
+  console.log(`\nLaunch args used: ${JSON.stringify(GPU_ARGS)}`);
+  return failed ? 1 : 0;
+}
+
+main().then((code) => { process.exitCode = code; }, (e) => { console.error(e); process.exitCode = 1; });
