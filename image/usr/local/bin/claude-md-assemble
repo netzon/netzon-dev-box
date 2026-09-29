@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Assemble /etc/claude-code/CLAUDE.md from /etc/claude-code/CLAUDE.d/*.md in name order.
+# Run as root at image build time. A downstream image adds its own fragments to CLAUDE.d and re-runs it:
+#   FROM <namespace>/dev-box:base
+#   COPY --chmod=644 90-team.md /etc/claude-code/CLAUDE.d/
+#   RUN claude-md-assemble
+set -Eeuo pipefail
+dir=/etc/claude-code/CLAUDE.d
+out=/etc/claude-code/CLAUDE.md
+shopt -s nullglob
+fragments=("$dir"/*.md)
+[[ ${#fragments[@]} -gt 0 ]] || { echo "claude-md-assemble: no fragments in $dir" >&2; exit 1; }
+{
+  for f in "${fragments[@]}"; do
+    printf '<!-- %s -->\n' "$(basename "$f")"
+    cat "$f"
+    printf '\n\n'
+  done
+} > "$out.tmp"
+install -m 644 "$out.tmp" "$out"
+rm -f "$out.tmp"
+echo "claude-md-assemble: wrote $out from ${#fragments[@]} fragment(s)"

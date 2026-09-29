@@ -17,34 +17,49 @@ concurrency:
 jobs:
   image:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - name: Check out repository
         uses: useblacksmith/checkout@v1
         with:
           persist-credentials: false
       - name: Setup Blacksmith Builder
+        # Blacksmith's builder keeps Docker layers and BuildKit cache mounts (apt) between runs, so
+        # unchanged stages are reused without explicit cache-from/cache-to settings.
         uses: useblacksmith/setup-docker-builder@v1
-      - name: Build image for validation
+      - name: Build base image for validation
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
           platforms: linux/amd64
+          target: base
+          load: true
+          push: false
+          tags: dev-box:base-ci
+      - name: Build full image for validation
+        # Shares every layer up to the SDK stages with the base build above.
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          platforms: linux/amd64
+          target: full
           load: true
           push: false
           tags: dev-box:ci
           build-args: |
             ACCEPT_ANDROID_LICENSES=1
-      - name: Smoke test as non-root user
+      - name: Smoke test base image as non-root user
         # Pass the script as an argument: without -i, `bash -s < file` gets an empty stdin and exits 0.
-        run: docker run --rm --entrypoint bash dev-box:ci -c "$(cat scripts/smoke-test.sh)"
+        run: docker run --rm --entrypoint bash dev-box:base-ci -c "$(cat scripts/smoke-test.sh)" smoke-test base
+      - name: Smoke test full image as non-root user
+        run: docker run --rm --entrypoint bash dev-box:ci -c "$(cat scripts/smoke-test.sh)" smoke-test full
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-      - name: Publish tested image
+      - name: Publish tested images
         if: github.event_name != 'pull_request'
         env:
           HUB_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
@@ -54,12 +69,17 @@ jobs:
           namespace="${HUB_NAMESPACE:-$HUB_USER}"
           test -n "$namespace"
           image="$namespace/dev-box"
-          docker tag dev-box:ci "$image:sha-${GITHUB_SHA::12}"
-          docker push "$image:sha-${GITHUB_SHA::12}"
+          sha="${GITHUB_SHA::12}"
+          publish() { docker tag "$1" "$image:$2"; docker push "$image:$2"; }
+          # Every publish gets immutable sha tags; `latest` is the full image.
+          publish dev-box:ci "sha-$sha"
+          publish dev-box:base-ci "base-sha-$sha"
           if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            docker tag dev-box:ci "$image:latest"
-            docker push "$image:latest"
+            publish dev-box:ci latest
+            publish dev-box:ci full
+            publish dev-box:base-ci base
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            docker tag dev-box:ci "$image:$GITHUB_REF_NAME"
-            docker push "$image:$GITHUB_REF_NAME"
+            publish dev-box:ci "$GITHUB_REF_NAME"
+            publish dev-box:ci "$GITHUB_REF_NAME-full"
+            publish dev-box:base-ci "$GITHUB_REF_NAME-base"
           fi
